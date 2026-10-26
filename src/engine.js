@@ -47,7 +47,7 @@ export function normalizeSpeech(text) {
 
 export function splitClauses(text) {
   return String(text ?? "")
-    .split(/[.!?;\n]+|,\s+(?=(?:but|and|my|the|it|i|और)\b)|\s+but\s+|\s+and\s+(?=(?:my|the|payment|bank|merchant|soundbox|speaker|settlement)\b)|\s+लेकिन\s+/iu)
+    .split(/[.!?;\n]+|,\s+(?=(?:but|and|my|the|it|i|payment|bank|merchant|ledger|soundbox|speaker|settlement|device|और)\b)|\s+but\s+|\s+and\s+(?=(?:my|the|payment|bank|merchant|ledger|soundbox|speaker|settlement|device)\b)|\s+लेकिन\s+/iu)
     .map(clause => clause.trim()).filter(Boolean).slice(0, 32)
     .map((text, i) => ({ id: `S${i + 1}`, text }));
 }
@@ -97,17 +97,23 @@ export function plan(facts, issues) {
   return { route: "General support", question: "What happened, when, and what reference is available?", reason: "The report needs basic details.", action: "Human reviewer gathers evidence; no financial action is initiated." };
 }
 
-export function analyze(report, id = "MHV-001") {
-  const facts = extract(report);
-  const issues = challenge(facts);
-  return { id, ...facts, issues, next: plan(facts, issues), revisions: [], createdAt: new Date().toISOString() };
+export const providers = ["Unspecified", "Paytm", "PhonePe", "Google Pay", "BharatPe", "Other UPI provider"];
+
+function safeProvider(value) {
+  return providers.includes(value) ? value : "Unspecified";
 }
 
-export function reviseCase(previous, report) {
-  const fresh = analyze(report, previous.id);
-  if (fresh.safe === previous.safe) return previous;
-  const before = { transcript: previous.safe, amount: previous.amount?.value ?? null, route: previous.next.route };
-  const after = { transcript: fresh.safe, amount: fresh.amount?.value ?? null, route: fresh.next.route };
+export function analyze(report, id = "MHV-001", provider = "Unspecified") {
+  const facts = extract(report);
+  const issues = challenge(facts);
+  return { id, provider: safeProvider(provider), ...facts, issues, next: plan(facts, issues), revisions: [], createdAt: new Date().toISOString() };
+}
+
+export function reviseCase(previous, report, provider = previous.provider) {
+  const fresh = analyze(report, previous.id, provider);
+  if (fresh.safe === previous.safe && fresh.provider === previous.provider) return previous;
+  const before = { transcript: previous.safe, amount: previous.amount?.value ?? null, route: previous.next.route, provider: previous.provider };
+  const after = { transcript: fresh.safe, amount: fresh.amount?.value ?? null, route: fresh.next.route, provider: fresh.provider };
   return {
     ...fresh,
     createdAt: previous.createdAt,
@@ -130,7 +136,7 @@ export const deviceChecks = [
 
 export function deviceDecision(caseFile, completed = {}, stillSilent = true) {
   if (!caseFile.claims.some(claim => claim.kind === "soundbox" && claim.status === "problem")) return { stage: "not-applicable", message: "No device problem reported." };
-  if (caseFile.issues.some(issue => ["mismatch", "contradiction"].includes(issue.type))) return { stage: "transaction-review", message: "Conflicting payment evidence needs transaction review regardless of device checks." };
+  if (caseFile.next.route === "Transaction review") return { stage: "transaction-review", message: "Transaction evidence needs review first. Device checks cannot establish payment status." };
   const remaining = deviceChecks.filter(check => completed[check.id] !== true);
   if (!stillSilent) return { stage: "reported-resolved", message: "Merchant reports sound restored. Verify payment separately in the ledger." };
   if (remaining.length) return { stage: "self-check", message: `${remaining.length} safe device check${remaining.length === 1 ? "" : "s"} remaining before support.` };
@@ -142,6 +148,7 @@ export function handoff(caseFile, completed = {}, stillSilent = true) {
   const claims = caseFile.claims.map(claim => `- ${claim.kind}: ${claim.status} [${claim.source}]`).join("\n") || "- No supported claims";
   return [
     `Case ${caseFile.id} — merchant-reported, unverified`,
+    `Provider: ${safeProvider(caseFile.provider)} (merchant-selected, not connected or verified)`,
     `Amount: ${caseFile.amount ? `₹${caseFile.amount.value} [${caseFile.amount.source}]` : "not established"}`,
     "Claims with transcript sources:", claims,
     `Open question: ${caseFile.next.question}`,
@@ -150,4 +157,20 @@ export function handoff(caseFile, completed = {}, stillSilent = true) {
     ...(device.stage === "not-applicable" ? [] : [`Device check stage: ${device.stage} — ${device.message}`]),
     "No payment, refund, transfer, or account action was taken."
   ].join("\n");
+}
+
+export function spokenRecap(caseFile, completed = {}, stillSilent = true) {
+  const device = deviceDecision(caseFile, completed, stillSilent);
+  const reported = caseFile.claims.length ? caseFile.claims.map(claim => `${claim.kind} ${claim.status}`).join(", ") : "no supported claims yet";
+  return `Case ${caseFile.id}. Merchant-reported signals: ${reported}. Suggested route: ${caseFile.next.route}. ${device.stage === "not-applicable" ? "" : `${device.message} `}This is not a verified payment result. Next question: ${caseFile.next.question}`;
+}
+
+export function correctionAudit(caseFile) {
+  return {
+    caseId: caseFile.id,
+    provider: safeProvider(caseFile.provider),
+    current: { transcript: caseFile.safe, amount: caseFile.amount, route: caseFile.next.route },
+    revisions: caseFile.revisions.map(({ number, before, after, at }) => ({ number, before, after, at })),
+    disclaimer: "Merchant reports are unverified. No financial action was taken."
+  };
 }

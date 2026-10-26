@@ -1,9 +1,11 @@
-import { analyze, deviceChecks, deviceDecision, handoff, reviseCase, upsertCase } from "./engine.js";
+import { analyze, correctionAudit, deviceChecks, deviceDecision, handoff, reviseCase, spokenRecap, upsertCase } from "./engine.js";
 
 const $ = id => document.getElementById(id);
 const sample = "Customer paid one thousand five hundred rupees, but the merchant app ledger nahi dikh raha hai. My Soundbox nahi bola. Bank settlement is missing.";
 let cases = [];
 let current = null;
+const browserSpeech = typeof window.speechSynthesis !== "undefined" && typeof window.SpeechSynthesisUtterance !== "undefined";
+const staticHost = location.hostname.endsWith("github.io");
 
 function el(tag, className, value) {
   const item = document.createElement(tag);
@@ -24,12 +26,20 @@ function updateDevice() {
   if (!current) return;
   const decision = deviceDecision(current, checks(), $("still-silent").checked);
   $("device").hidden = decision.stage === "not-applicable";
+  $("checks").hidden = decision.stage === "transaction-review";
+  $("still-silent").closest("label").hidden = decision.stage === "transaction-review";
   $("device-stage").textContent = decision.message;
   $("handoff").textContent = summary();
   $("copy").textContent = decision.stage === "device-handoff" ? "Copy device handoff" : "Copy case summary";
 }
 
+function stopReading() {
+  if (browserSpeech) window.speechSynthesis.cancel();
+  $("stop-reading").hidden = true;
+}
+
 function render(caseFile) {
+  stopReading();
   const sameCase = current?.id === caseFile.id;
   current = caseFile;
   $("empty").hidden = true;
@@ -65,7 +75,7 @@ function render(caseFile) {
     const compare = el("div", "revision-grid");
     for (const [label, version] of [["PREVIOUS", revision.before], ["REVISED", revision.after]]) {
       const box = el("div");
-      box.append(el("span", "", label), el("p", "", version.transcript), el("small", "", `₹${version.amount ?? "not established"} · ${version.route}`));
+      box.append(el("span", "", label), el("p", "", version.transcript), el("small", "", `₹${version.amount ?? "not established"} · ${version.route} · ${version.provider ?? "Unspecified"}`));
       compare.append(box);
     }
     card.append(compare);
@@ -87,8 +97,10 @@ $("checks").replaceChildren(...deviceChecks.map(check => {
 $("still-silent").addEventListener("change", updateDevice);
 $("sample").addEventListener("click", () => { $("report").value = sample; $("report").focus(); });
 $("new-case").addEventListener("click", () => {
+  stopReading();
   current = null;
   $("report").value = "";
+  $("provider").value = "Unspecified";
   $("empty").hidden = false;
   $("result").hidden = true;
   $("trace").hidden = true;
@@ -98,10 +110,33 @@ $("new-case").addEventListener("click", () => {
 $("investigate").addEventListener("click", () => {
   const report = $("report").value.trim();
   if (!report) { $("report").focus(); return; }
-  const file = current ? reviseCase(current, report) : analyze(report, `MHV-${String(Date.now()).slice(-7)}`);
+  const file = current ? reviseCase(current, report, $("provider").value) : analyze(report, `MHV-${String(Date.now()).slice(-7)}`, $("provider").value);
   cases = upsertCase(cases, file);
   render(file);
   document.querySelector(".result").scrollIntoView({ behavior: "smooth", block: "nearest" });
+});
+$("read-aloud").disabled = !browserSpeech;
+if (!browserSpeech) $("read-aloud").textContent = "Read-aloud unavailable in this browser";
+$("read-aloud").addEventListener("click", () => {
+  if (!current || !browserSpeech) return;
+  stopReading();
+  const utterance = new window.SpeechSynthesisUtterance(spokenRecap(current, checks(), $("still-silent").checked));
+  utterance.lang = "en-IN";
+  utterance.rate = 0.92;
+  utterance.onend = utterance.onerror = () => { $("stop-reading").hidden = true; };
+  $("stop-reading").hidden = false;
+  window.speechSynthesis.speak(utterance);
+});
+$("stop-reading").addEventListener("click", stopReading);
+$("audit").addEventListener("click", () => {
+  if (!current) return;
+  const blob = new Blob([JSON.stringify(correctionAudit(current), null, 2)], { type: "application/json" });
+  const link = document.createElement("a");
+  link.href = URL.createObjectURL(blob);
+  link.download = `${current.id}-redacted-audit.json`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(link.href), 1000);
+  $("action-status").textContent = "Downloaded redacted case audit.";
 });
 $("copy").addEventListener("click", async () => {
   try { await navigator.clipboard.writeText(summary()); $("action-status").textContent = "Copied."; }
@@ -122,3 +157,7 @@ $("advisory").addEventListener("click", async () => {
   } catch (error) { $("action-status").textContent = error.message; }
   finally { $("advisory").disabled = false; }
 });
+if (staticHost) {
+  $("advisory").disabled = true;
+  $("advisory").textContent = "AI advisory requires local server";
+}

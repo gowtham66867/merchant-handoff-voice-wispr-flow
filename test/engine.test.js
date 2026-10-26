@@ -1,6 +1,6 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { analyze, deviceChecks, deviceDecision, extract, handoff, normalizeSpeech, redact, reviseCase, splitClauses, upsertCase } from "../src/engine.js";
+import { analyze, correctionAudit, deviceChecks, deviceDecision, extract, handoff, normalizeSpeech, redact, reviseCase, spokenRecap, splitClauses, upsertCase } from "../src/engine.js";
 
 test("spoken English and Hindi amounts become digits", () => {
   assert.match(normalizeSpeech("one thousand five hundred rupees"), /₹1500/u);
@@ -44,6 +44,11 @@ test("transaction mismatch overrides completed device checks", () => {
   const all = Object.fromEntries(deviceChecks.map(check => [check.id, true]));
   assert.equal(deviceDecision(file, all).stage, "transaction-review");
 });
+test("missing ledger with reported payment prioritizes transaction review over device checks", () => {
+  const file = analyze("Payment successful, Soundbox silent, bank settlement arrived.");
+  assert.equal(file.next.route, "Transaction review");
+  assert.equal(deviceDecision(file).stage, "transaction-review");
+});
 test("private identifiers are absent from returned case and history", () => {
   assert.equal(redact("demo@example.com +919876543210 1234567890123456"), "[email redacted] [phone redacted] [account number redacted]");
   const before = analyze("Payment ₹500. Call +919876543210.", "MHV-P1");
@@ -71,4 +76,30 @@ test("correction changes same case and does not double count", () => {
 test("unchanged correction is not duplicated", () => {
   const first = analyze("Soundbox silent.");
   assert.equal(reviseCase(first, "Soundbox silent."), first);
+});
+test("comma-separated mixed signals retain independent statuses", () => {
+  const file = analyze("Payment successful, Soundbox silent, bank settlement arrived.");
+  assert.deepEqual(file.claims.map(({ kind, status, source }) => [kind, status, source]), [
+    ["payment", "success", "S1"], ["soundbox", "problem", "S2"], ["settlement", "success", "S3"]
+  ]);
+  assert.equal(file.next.route, "Transaction review");
+});
+test("provider choice is self-reported, bounded, and corrected in the same case", () => {
+  const first = analyze("Soundbox silent.", "MHV-P2", "Paytm");
+  const second = reviseCase(first, "Soundbox silent.", "PhonePe");
+  assert.equal(second.id, first.id);
+  assert.equal(second.revisions.length, 1);
+  assert.equal(second.provider, "PhonePe");
+  assert.match(handoff(second), /PhonePe \(merchant-selected, not connected or verified\)/u);
+  assert.equal(analyze("Soundbox silent.", "MHV-P3", "<script>").provider, "Unspecified");
+});
+test("spoken recap and audit contain only redacted report details", () => {
+  const first = analyze("My Soundbox was silent. Email demo@example.com.", "MHV-V1", "BharatPe");
+  const second = reviseCase(first, "My Soundbox was silent. Call 9876543210.");
+  const recap = spokenRecap(second);
+  const audit = JSON.stringify(correctionAudit(second));
+  assert.match(recap, /not a verified payment result/u);
+  assert.match(audit, /\[email redacted\]/u);
+  assert.match(audit, /\[phone redacted\]/u);
+  assert.doesNotMatch(`${recap}${audit}`, /demo@example\.com|9876543210/u);
 });
