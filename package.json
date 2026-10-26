@@ -1,0 +1,12 @@
+{
+  "name": "merchant-handoff-voice",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "start": "node server.js",
+    "test": "node --test",
+    "eval": "node evals/run.js",
+    "check": "node --check server.js && node --check src/engine.js && node --check src/app.mjs && node --check src/advisory.js && npm test && npm run eval"
+  }
+}
