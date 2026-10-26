@@ -1,7 +1,7 @@
 const NEGATIVE = /\b(?:not|no|never|didn't|doesn't|wasn't|isn't|failed|failure|missing|silent|pending|stuck|nahi|nahin)\b|नहीं|नही/iu;
 const INSTRUCTION = /ignore (?:all |previous |the )?(?:instructions|rules)|system prompt|developer message|override policy|approve (?:the )?refund|send money|transfer funds/iu;
 const KINDS = [
-  ["payment", /\b(?:payment|paid|upi|customer|transaction)\b|पेमेंट|भुगतान/iu, /\b(?:paid|success|successful|received|completed|credited)\b|हो गया|सफल/iu],
+  ["payment", /\b(?:payment|paid|upi|transaction)\b|पेमेंट|भुगतान/iu, /\b(?:paid|success|successful|received|completed|credited)\b|हो गया|सफल/iu],
   ["ledger", /\b(?:ledger|merchant app|transaction list|dashboard|app history)\b|दिख रहा|दिखाई/iu, /\b(?:visible|shown|shows|appears|listed|credited|dikh raha hai)\b|दिख रहा|दिखाई/iu],
   ["settlement", /\b(?:bank|settlement|payout|account credit|money arrived)\b|बैंक|सेटलमेंट/iu, /\b(?:arrived|settled|credited|received)\b|आ गया|जमा/iu],
   ["soundbox", /\b(?:sound\s?box|speaker|soundpod|announcement|voice box|notification device)\b|आवाज़|बोला/iu, /\b(?:announced|spoke|rang|heard|played|bola)\b|बोला|आवाज़ आई/iu]
@@ -34,7 +34,7 @@ export function normalizeSpeech(text) {
     .replace(/\b(?:rupeeya|rupiya|rupaye)\b/giu, "rupees")
     .replace(/\b(?:nahi|nahin)\s+(?:bola|bolaa)\b/giu, "not announced")
     .replace(/\b(?:nahi|nahin)\s+(?:dikh raha hai|dikhra hai|dikha)\b/giu, "not visible")
-    .replace(/(?:पाँच|पांच)\s*सौ|पंचो/gu, "500");
+    .replace(/(?:पाँच|पांच)\s*सौ|पंचो/gu, "₹500");
   const phrase = new RegExp(`\\b((?:(?:${WORD}|hundred|thousand|and)[\\s-]+){1,6})(?:rupees?)\\b`, "giu");
   result = result.replace(phrase, (full, words) => {
     const amount = wordAmount(words.trim());
@@ -47,7 +47,7 @@ export function normalizeSpeech(text) {
 
 export function splitClauses(text) {
   return String(text ?? "")
-    .split(/[.!?;\n]+|,\s+(?=(?:but|and|my|the|it|i|और)\b)|\s+but\s+|\s+लेकिन\s+/iu)
+    .split(/[.!?;\n]+|,\s+(?=(?:but|and|my|the|it|i|और)\b)|\s+but\s+|\s+and\s+(?=(?:my|the|payment|bank|merchant|soundbox|speaker|settlement)\b)|\s+लेकिन\s+/iu)
     .map(clause => clause.trim()).filter(Boolean).slice(0, 32)
     .map((text, i) => ({ id: `S${i + 1}`, text }));
 }
@@ -91,7 +91,7 @@ export function challenge(facts) {
 export function plan(facts, issues) {
   const of = kind => facts.claims.filter(claim => claim.kind === kind);
   const has = type => issues.some(issue => issue.type === type);
-  if (has("contradiction") || has("mismatch") || (of("payment").length && !of("ledger").length)) return { route: "Transaction review", question: "What status, reference, and timestamp appear in the merchant ledger?", reason: "Payment and ledger evidence need reconciliation.", action: "Human reviewer checks authoritative transaction records before any financial action." };
+  if (has("contradiction") || has("mismatch") || of("ledger").some(x => x.status === "problem") || (of("payment").length && !of("ledger").length)) return { route: "Transaction review", question: "What status, reference, and timestamp appear in the merchant ledger?", reason: "Payment and ledger evidence need reconciliation.", action: "Human reviewer checks authoritative transaction records before any financial action." };
   if (of("ledger").length && (!of("settlement").length || of("settlement").some(x => x.status === "problem"))) return { route: "Settlement review", question: "What settlement date and bank entry can the merchant see?", reason: "Ledger and bank settlement are separate signals.", action: "Human reviewer checks settlement records; no payout or refund is initiated." };
   if (of("soundbox").some(x => x.status === "problem")) return { route: "Device support", question: "Is the device still silent after checking power, volume, connectivity, and any safe test announcement?", reason: "A silent device alone does not prove payment failure.", action: "Merchant performs safe self-checks before a device-support handoff; payment is checked separately in the ledger." };
   return { route: "General support", question: "What happened, when, and what reference is available?", reason: "The report needs basic details.", action: "Human reviewer gathers evidence; no financial action is initiated." };
