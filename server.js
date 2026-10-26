@@ -2,12 +2,13 @@ import { createServer } from "node:http";
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+import { askAdvisory } from "./src/advisory.js";
 
 const root = fileURLToPath(new URL(".", import.meta.url));
 const port = Number(process.env.PORT || 8088);
 const types = { ".html": "text/html; charset=utf-8", ".mjs": "text/javascript; charset=utf-8", ".js": "text/javascript; charset=utf-8", ".css": "text/css; charset=utf-8" };
 
-export function createAppServer(assist = async () => ({ error: "AI advisory is not configured." })) {
+export function createAppServer(assist = async body => askAdvisory(body.report)) {
   return createServer(async (req, res) => {
     res.setHeader("x-content-type-options", "nosniff");
     res.setHeader("cache-control", "no-store");
@@ -18,12 +19,15 @@ export function createAppServer(assist = async () => ({ error: "AI advisory is n
         if (body.length > 12_000) { res.writeHead(413); res.end("Payload too large"); return; }
       }
       try {
-        const result = await assist(JSON.parse(body));
+        const parsed = JSON.parse(body);
+        if (!parsed || typeof parsed.report !== "string" || parsed.report.length > 8000) throw new Error("Invalid report");
+        const result = await assist(parsed);
         res.writeHead(result.error ? 503 : 200, { "content-type": "application/json; charset=utf-8" });
         res.end(JSON.stringify(result));
-      } catch {
-        res.writeHead(400, { "content-type": "application/json; charset=utf-8" });
-        res.end(JSON.stringify({ error: "Invalid advisory request." }));
+      } catch (error) {
+        const invalid = error instanceof SyntaxError || error.message === "Invalid report";
+        res.writeHead(invalid ? 400 : 503, { "content-type": "application/json; charset=utf-8" });
+        res.end(JSON.stringify({ error: invalid ? "Invalid advisory request." : error.message }));
       }
       return;
     }
