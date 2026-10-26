@@ -102,3 +102,52 @@ export function analyze(report, id = "MHV-001") {
   const issues = challenge(facts);
   return { id, ...facts, issues, next: plan(facts, issues), revisions: [], createdAt: new Date().toISOString() };
 }
+
+export function reviseCase(previous, report) {
+  const fresh = analyze(report, previous.id);
+  if (fresh.safe === previous.safe) return previous;
+  const before = { transcript: previous.safe, amount: previous.amount?.value ?? null, route: previous.next.route };
+  const after = { transcript: fresh.safe, amount: fresh.amount?.value ?? null, route: fresh.next.route };
+  return {
+    ...fresh,
+    createdAt: previous.createdAt,
+    updatedAt: fresh.createdAt,
+    revisions: [...previous.revisions, { number: previous.revisions.length + 1, before, after, at: fresh.createdAt }]
+  };
+}
+
+export function upsertCase(cases, caseFile) {
+  const index = cases.findIndex(item => item.id === caseFile.id);
+  return index < 0 ? [...cases, caseFile] : cases.map((item, i) => i === index ? caseFile : item);
+}
+
+export const deviceChecks = [
+  { id: "ledger", label: "Check the transaction in the merchant app ledger." },
+  { id: "power", label: "Check device power, charging, and volume." },
+  { id: "connection", label: "Check the displayed network or connection status." },
+  { id: "test", label: "If available, try a safe test announcement and note the result." }
+];
+
+export function deviceDecision(caseFile, completed = {}, stillSilent = true) {
+  if (!caseFile.claims.some(claim => claim.kind === "soundbox" && claim.status === "problem")) return { stage: "not-applicable", message: "No device problem reported." };
+  if (caseFile.issues.some(issue => ["mismatch", "contradiction"].includes(issue.type))) return { stage: "transaction-review", message: "Conflicting payment evidence needs transaction review regardless of device checks." };
+  const remaining = deviceChecks.filter(check => completed[check.id] !== true);
+  if (!stillSilent) return { stage: "reported-resolved", message: "Merchant reports sound restored. Verify payment separately in the ledger." };
+  if (remaining.length) return { stage: "self-check", message: `${remaining.length} safe device check${remaining.length === 1 ? "" : "s"} remaining before support.` };
+  return { stage: "device-handoff", message: "Sound remains missing after merchant-reported checks. Prepare a device-support handoff; payment status remains unverified." };
+}
+
+export function handoff(caseFile, completed = {}, stillSilent = true) {
+  const device = deviceDecision(caseFile, completed, stillSilent);
+  const claims = caseFile.claims.map(claim => `- ${claim.kind}: ${claim.status} [${claim.source}]`).join("\n") || "- No supported claims";
+  return [
+    `Case ${caseFile.id} — merchant-reported, unverified`,
+    `Amount: ${caseFile.amount ? `₹${caseFile.amount.value} [${caseFile.amount.source}]` : "not established"}`,
+    "Claims with transcript sources:", claims,
+    `Open question: ${caseFile.next.question}`,
+    `Route: ${caseFile.next.route} — ${caseFile.next.reason}`,
+    `Next action: ${caseFile.next.action}`,
+    ...(device.stage === "not-applicable" ? [] : [`Device check stage: ${device.stage} — ${device.message}`]),
+    "No payment, refund, transfer, or account action was taken."
+  ].join("\n");
+}
